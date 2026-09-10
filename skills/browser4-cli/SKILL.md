@@ -110,6 +110,10 @@ Browser4 can launch Chrome in two display modes:
 | **Headless** | `--headless` | No GUI window | **Default for AI agents** — scraping, automation, CI/CD, server environments |
 | **Headed** | `--headed` | Visible browser window | Debugging, user demonstration, interactive development |
 
+> **Choosing the whole setup** (session × display × browser source — including
+> when to attach to your own browser instead of launching one): see
+> [browser-modes.md](references/browser-modes.md).
+
 **Rule for AI agents: always use `--headless` by default.** Headless mode is faster, uses fewer resources, and avoids cluttering the user's desktop with browser windows. The only reason to use `--headed` is when the user **explicitly** requests a visible browser — look for phrases like "show me the browser", "I want to see", "open visibly", "headed", "watch what happens", or "debug visually". If user participation in the page interaction is required — e.g., logging in or entering a verification code (CAPTCHA) — open a **headed** browser so the user can see and act on the page.
 
 Set the display mode with the `open` command when starting a **new** session. The `goto` command does **not** accept `--headless`/`--headed` directly — it inherits the session's existing display mode:
@@ -236,7 +240,8 @@ browser4-cli -s ext-session tab-select 0
 | `goto`, `open`, `close`, `reload` | Navigation & session management | Every session starts here | — |
 | `snapshot` | Capture accessibility tree (AXTree) with element refs | **Page structure & interaction** — find elements to click, fill, etc. Use `snapshot` when you need refs (e5, e36) to interact with. | [snapshot.md](references/snapshot.md) |
 | `snapshot grep` | Search snapshot content with regex | Find elements by text or pattern | — |
-| `click`, `dblclick`, `drag`, `hover`, `fill`, `type`, `press`, `select`, `check`, `generate-locator` | Page interaction | Form filling, button clicks, mouse actions, navigation | — |
+| `click`, `dblclick`, `drag`, `hover`, `fill`, `type`, `press`, `select`, `check`, `generate-locator` | Page interaction | Form filling, button clicks, mouse actions, navigation. `type --method auto\|chars\|exec` (needs a target ref) bulk-inserts long (>150 chars) or multi-line text in one `execCommand('insertText')` instead of typing per character | — |
+| `upload <ref> <file> [file...]` | Upload local files to a page file input | Send attachments/photos/documents to an `<input type="file">`; the target must be a file input, paths must be readable on the machine running the browser | [upload.md](references/upload.md) |
 | `dialog-accept`, `dialog-dismiss` | Native JS dialog handling | After clicking buttons that trigger alert/confirm/prompt | — |
 | `htmlsnapshot get`, `get all` | Extract text/html/attr via CSS selectors from stored HTML | **Page content & text extraction** — get article text, headings, attributes. Use `htmlsnapshot` when you need to read or extract page content. | [htmlsnapshot.md](references/htmlsnapshot.md) |
 | `get <mode> <selector> [name]` | **Live-DOM single-element read** (`text`, `html`, `box`, `styles`, `property`, `attr`) — capture-free, works on the current live page with refs or CSS selectors | **Post-interaction verification & quick reads** — "did the submit work?" without a capture round-trip. `get text <sel>` after a click/fill; `get attr <sel> href` for link URLs. Caveat: attribute/property reads via CSS are the least reliable mode, and a missing attribute reads as `null` (ambiguous with a failed resolution) | — |
@@ -248,7 +253,7 @@ browser4-cli -s ext-session tab-select 0
 | `swarm` | Parallel scraping across browser contexts | High-throughput extraction | [swarm.md](references/swarm.md) |
 | `loop` | Repeated task execution with persistence | Monitoring, scheduled checks | [loop.md](references/loop.md) |
 | `state-save`, `state-load`, `cookie-*`, `*-storage-*` | Browser storage management | Auth state reuse, cookie manipulation | [storage-state.md](references/storage-state.md) |
-| `attach` | Connect to existing Chrome/Edge via CDP | Debug live browser, reuse auth | [attach.md](references/attach.md) |
+| `attach` | Connect to existing Chrome/Edge via CDP | Debug live browser, reuse auth — after attaching, check the printed actual browser; a ⚠ warning flags a channel mismatch (e.g. requested msedge but Chrome connected) | [attach.md](references/attach.md) |
 | `webdb export`, `webdb normalize` | Export cached pages, normalize URLs to database keys | Post-crawl content extraction, URL key lookup | [webdb.md](references/webdb.md) |
 | `skills`, `skills get`, `skills path`, `skills unpack` | Bundled AI agent skill files | Refresh agent instructions, unpack skill files | [skills.md](references/skills.md) |
 | `skill-list`, `skill-info`, `skill-install`, `skill-uninstall`, `skill-reload` | Backend skill management | Install/manage server-side skills | [skills.md](references/skills.md) |
@@ -496,6 +501,8 @@ browser4-cli htmlsnapshot get text ".price" --all    # quick test: does this sel
 > **Warning:** Don't cat snapshot files — they can exceed 256KB. The same applies to `--stdout`, which may dump large accessibility trees (63KB+ for content-rich pages). Use viewport pagination (`snapshot -v 0`), `snapshot grep <pattern>`, or `snapshot --stdout --page 1` instead. For targeted extraction, prefer `snapshot grep` or `htmlsnapshot` commands over full-tree dumps.
 
 > **Note:** Output pagination defaults — `get html`, `get all html`, and `grep` paginate at 2K lines. `get text` and `get all text` are not paginated by default. Use `--all` to disable pagination, or `--page N` for subsequent pages.
+
+> **Note — `snapshot --stdout`/`--raw` pagination:** large stdout trees are paginated at **2000 lines/page** by default. When truncated, the footer goes to stderr, and when stdout is a pipe/redirect a `# … output truncated: showing N of M lines — re-run with --all (or --page-size 0) for the full tree.` hint is appended to stdout so the cut is visible in captured output. `--page-size 0` (or `--all`) disables paging. For very large pages, prefer bounding the capture with `-v N`, `--depth`, `--selector`, or `--no-boxes` over full-tree dumps.
 
 > **Snapshot modes — when to use `-v 0` vs `-i` vs default:**
 >
@@ -758,12 +765,17 @@ browser4-cli agent result <task-id>
 
 See **[agent.md](references/agent.md)** for full details including LLM key configuration, error recovery, and `extract`/`summarize` synchronous variants.
 
+> **Note — typing long or multi-line text (`type --method`):** `type "text" <ref> --method auto|chars|exec` (a target ref is required) — `auto` (default) types short text per-character and switches to a one-shot `execCommand('insertText')` bulk insert for long (>150 chars) or multi-line text on textarea/contenteditable; `chars` forces per-character typing; `exec` forces the bulk insert. `--verify` keeps its strict read-back semantics for tool callers.
+
+> **Note — file upload (`upload`):** `upload <ref> <file> [file...]` uploads one or more local files to a page file input (`<input type="file">` only); the paths must be readable by the browser process (remote backend: resolved on the backend host). Multi-file, absolute paths and `--no-snapshot` are supported; see [upload.md](references/upload.md).
+
 ## 7. Reference Map
 
 Organized by task — follow the link that matches what you're trying to do:
 
 **Interact with pages (accessibility tree & element refs):**
 [snapshot.md](references/snapshot.md) — `snapshot`, `snapshot grep`, `-v` viewport paging, `--auto-diff`, `-i` interactive mode, element refs
+[upload.md](references/upload.md) — upload local files to a page `<input type="file">` (multi-file, `--no-snapshot`, browser-host path rules)
 
 **Extract data from pages:**
 [htmlsnapshot.md](references/htmlsnapshot.md) — `get`, `get all`, `query`, `grep`, `summary`, `inspect`, `export`
@@ -781,6 +793,9 @@ Organized by task — follow the link that matches what you're trying to do:
 [storage-state.md](references/storage-state.md) — cookies, localStorage, sessionStorage, state save/load
 [webdb.md](references/webdb.md) — export cached pages, normalize URLs for database lookups
 [attach.md](references/attach.md) — connect to existing Chrome/Edge via CDP
+
+**Choose how the browser runs:**
+[browser-modes.md](references/browser-modes.md) — session (default / named / swarm) × display (headless / headed / SUPERVISED) × browser source (managed / `attach --cdp` / `attach --extension`), plus profile mode, interact level, contexts, and their failure modes
 
 **Manage skills and agent instructions:**
 [skills.md](references/skills.md) — bundled skill files, backend skill management
