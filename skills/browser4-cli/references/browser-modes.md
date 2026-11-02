@@ -232,6 +232,18 @@ like GUI, and in Docker/headless environments the launch is forced headless anyw
   determined the driver logs a warning and leaves Chrome's default user agent in place —
   expect the `HeadlessChrome` token in that case, and set `browser.launch.user.agent` to
   fix it.
+- **Master switch: `browser.stealth.enabled` (default `true`).** Setting it to `false`
+  turns off **every** Browser4 stealth injection in one place: the page-world
+  `js/stealth.js` payload is no longer registered on new documents, and the headless
+  `HeadlessChrome` user-agent replacement is skipped (the browser keeps its native UA).
+  Human-like input behaviour is **not** affected — trusted CDP clicks, segmented mouse
+  movement, typing jitter, and the Browser4 isolated-world runtime all keep working.
+  This is intended for sessions driven through a fingerprint browser (`attach --cdp` to
+  an anti-detect browser, …): let the fingerprint browser own the fingerprint instead of
+  stacking Browser4's evasions on top. Set it in `application.properties` (server-wide)
+  or pass `-Dbrowser.stealth.enabled=false` when starting the backend.
+  **The `ego-lite` channel skips Browser4's stealth layer automatically** (see the
+  managed-channel section below) — no configuration is needed for that case.
 - `navigator.deviceMemory` and `navigator.maxTouchPoints` are **Chrome's own readings of the
   host**, not Browser4 overrides — verify before reporting them as defects. Chrome derives
   `deviceMemory` from the host RAM by rounding down to a power of two, and recent Chrome
@@ -297,7 +309,7 @@ like GUI, and in Docker/headless environments the launch is forced headless anyw
 
 | | Backend-launched (`open`) | `attach --cdp` | `attach --extension` |
 |---|---|---|---|
-| Browser | Chrome launched by Browser4 | any already-running CDP endpoint: Chrome/Edge/Electron/cloud | already-running Chrome/Edge **with the Browser4 extension installed** |
+| Browser | Chrome by default, or ego lite via `open --channel ego-lite` — launched by Browser4 | any already-running CDP endpoint: Chrome/Edge/Electron/cloud | already-running Chrome/Edge **with the Browser4 extension installed** |
 | Setup | none | remote debugging enabled in either form — start the browser with `--remote-debugging-port=N` (plus a non-default `--user-data-dir`), or flip `chrome://inspect/#remote-debugging` → *"Allow remote debugging for this browser instance"* | install the extension; optionally set `BROWSER4_EXTENSION_TOKEN` to skip the approval dialog |
 | Login state | whatever the Browser4 profile holds (or `state-save`/`state-load`) | the real profile you are using | the real profile you are using |
 | Connection check | — | candidates from `DevToolsActivePort` + process listeners are probed, and the first endpoint that can host a page wins: an HTTP endpoint with `/json` page targets, or a browser-level WebSocket that answers `Target.getTargets`; loud errors otherwise | session stays pending until the extension connects; pending connections expire after ~2 min |
@@ -307,9 +319,38 @@ like GUI, and in Docker/headless environments the launch is forced headless anyw
 | Works in CI | yes | only with an explicitly started browser/endpoint | no (needs an interactive Chrome with the extension) |
 | Best for | production batches, clean environments, CI | debugging live issues, cloud browsers, Electron, SSH-tunnelled remote Chrome | "just use my own browser" with zero flags/ports |
 
+**Managed browser channel (`open --channel`)**
+
+`open --channel chrome|ego-lite` picks which browser the backend launches and manages for the
+session. `chrome` is the default and needs no flag. `ego-lite` launches an installed
+[ego lite](https://www.citrolab.ai/) browser instead of Chrome: the binary is resolved from
+`ego.path` (configuration or `-Dego.path=...` on the backend) or the standard install locations
+(`Program Files` / `Program Files (x86)` / `LOCALAPPDATA` under `Citro Labs\ego lite\Application\ego.exe`),
+and everything after the binary choice — CDP transport, profile modes, `close` process
+reaping — is the standard managed-launch machinery. Like the display mode, the
+channel is fixed when the session is created: reconnecting ignores it, use `close` or `open --fresh`
+to switch. Any other channel name (`msedge`, …) is attach-only — `open` rejects it with a hint to
+`attach --cdp`.
+
+> **ego lite is a fingerprint browser and owns its own anti-detection behaviour.**
+> Browser4 therefore never injects its stealth layer into an ego-lite session: no page-world
+> `js/stealth.js` payload and no `--user-agent` rewrite, regardless of
+> `browser.stealth.enabled`. Human-like input (trusted clicks, segmented mouse moves, typing
+> jitter) is still used. This is automatic — there is nothing to configure.
+>
+> Managed ego launches additionally write `webrtc.ip_handling_policy =
+> disable_non_proxied_udp` into the profile's `Preferences`, so WebRTC candidates never
+> expose the host's real IP (srflx UDP is forced through the proxy, or dropped without
+> one) — the same policy privacy extensions apply, WebRTC itself stays available. The
+> `--force-webrtc-ip-handling-policy` switch is **ignored by Chromium 156**, only the
+> preference works; an existing value in the profile always wins.
+> **Attaching instead?** A running browser cannot be reconfigured, so set the same key
+> once in the profile's `Default/Preferences` while ego is closed (or in ego's own
+> WebRTC setting), then restart.
+
 **`attach --cdp` endpoint resolution**
 
-`--cdp` accepts a channel name (`chrome`, `chrome-canary`, `msedge`, `msedge-dev`, …), an HTTP endpoint
+`--cdp` accepts a channel name (`chrome`, `chrome-canary`, `msedge`, `msedge-dev`, `ego-lite`, …), an HTTP endpoint
 (`http://localhost:9222`), a WebSocket URL, a bare port, or `host:port`. A **browser-level** WebSocket
 (`ws://…/devtools/browser/<uuid>`) is attached to over that socket; a **page-level** one is only a
 host:port hint, with pages resolved over `GET /json`.
@@ -359,7 +400,7 @@ a managed session, use `state-save` / `state-load`.
 | `--max-browser-contexts` / `--max-open-tabs` | swarm: 2 contexts × 8 tabs | Each context is a browser instance — this is the throughput/memory dial. |
 | Browser contexts (server) | `browser.context.number=2`, `browser.max.active.tabs=8` | Global defaults for managed browsers. |
 | Proxy rotation | `proxy.rotation.url`, only for `SEQUENTIAL`/`TEMPORARY` | IP rotation requires giving up the shared `DEFAULT` profile. |
-| Browser channel | managed = Chrome; attach = chrome*/msedge* | Need Edge/Canary/Electron/cloud → attach only. |
+| Browser channel | managed = Chrome (default) or ego lite via `open --channel ego-lite`; attach = chrome*/msedge*/ego-lite | Managed ego lite needs the browser installed (or `ego.path` set on the backend); Edge/Canary/Electron/cloud → attach only. |
 | Platform | GUI-less envs force headless; sandboxed shells need writable `BROWSER4_RUNTIME_DIR` / `BROWSER4_CLI_STATE_DIR` | Determines whether headed is even possible and whether the backend can start. |
 | Lifecycle | `close` (one session) · `close-all` · `swarm close` | `swarm close` also aborts pending tasks; forgetting it holds contexts and the worker pool. |
 | Observability | `list` (Connection column shows the **actual** browser, flagging channel mismatches; Display column shows the creation-time mode — Headed/Headless/Supervised/Attached) · `status` · `screenshot` | Always confirm the real browser after an attach — driving the wrong profile looks like "lost login state". |

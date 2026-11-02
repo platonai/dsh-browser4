@@ -10,15 +10,21 @@ Instead of launching a new browser, `attach` connects to an already-running Chro
 
 ## Quick Start
 
+Pick the transport that matches the browser you want to drive:
+
 ```bash
-# 1. Make the target browser debuggable — start it with a debug port.
-#    A separate profile keeps it independent of your everyday browser:
+# A. Your everyday Chrome, already logged in — the Browser4 Extension is installed and enabled there.
+browser4-cli attach --extension
+
+# B. A browser you start yourself with a debug port (a separate profile, so no shared logins).
 chrome --remote-debugging-port=9222 --user-data-dir=/tmp/b4-attach-profile
+browser4-cli -s debug attach --cdp chrome
 
-# 2. Attach by channel name (or by endpoint, see below)
-browser4-cli attach --cdp chrome
+# C. Citro Labs "ego (lite)" — CDP only, and its normal profile accepts a debug port.
+"C:\Program Files\Citro Labs\ego lite\Application\ego.exe" --remote-debugging-port=9222
+browser4-cli -s ego attach --cdp ego-lite
 
-# 3. Interact with your existing tabs
+# 3. Interact with the attached tabs
 browser4-cli snapshot
 browser4-cli screenshot --filename current-state.png
 
@@ -26,18 +32,30 @@ browser4-cli screenshot --filename current-state.png
 browser4-cli state-save auth.json
 ```
 
+> **Which transport?** `--extension` is the only one that reuses your everyday Chrome profile:
+> Chrome refuses a debug port on the default profile, so any `--cdp` browser runs with its own
+> `--user-data-dir` and therefore without your logins. When the site needs an authenticated session
+> (X, LinkedIn, a bank dashboard), start with `attach --extension`.
+
 > **Chrome's built-in remote debugging works too.** `chrome://inspect/#remote-debugging` →
 > *"Allow remote debugging for this browser instance"* (recent Chrome builds) publishes a
-> browser-level WebSocket and answers **every `/json*` path with HTTP 404**. Browser4 attaches to it
-> over that socket — `attach --cdp chrome` resolves the URL from `DevToolsActivePort` automatically,
-> and you can always pass it explicitly:
+> browser-level WebSocket and answers **every `/json*` path with HTTP 404**. Two ways in, in this
+> order:
+>
+> 1. `browser4-cli attach --extension` — the supported path for this mode.
+> 2. Pass the browser-level socket explicitly:
 >
 > ```bash
 > browser4-cli attach --cdp ws://127.0.0.1:9222/devtools/browser/<uuid>
 > ```
 >
-> The path is the second line of the profile's `DevToolsActivePort` file. `attach --extension` remains
-> available as an alternative for that browser.
+> The path is the second line of the profile's `DevToolsActivePort` file.
+>
+> `attach --cdp chrome` only finds this browser while the published port is **live** — the
+> `DevToolsActivePort` file survives the browser that wrote it, so a stale copy (often months old)
+> is a common false lead. Confirm the first line answers (`curl http://127.0.0.1:<port>/json/version`
+> or `Test-NetConnection`) before retrying; if nothing answers, the toggle is off or the browser
+> restarted without it.
 
 ## When to Use
 
@@ -76,6 +94,12 @@ no page target never wins over one that does:
      > endpoint (`--cdp http://localhost:9222`, `--cdp host:port`, `--cdp 9222`) or start the target
      > browser with a fixed `--remote-debugging-port`.
 4. **Port-range scan** — concurrently probes 9222–9333 for any CDP endpoint that exposes a page target, as a last resort.
+
+> **`ego-lite` skips tiers 1 and 4.** ego lite answers CDP as `Chrome/<version>` and writes no
+> `DevToolsActivePort`, so neither a conventional port nor a blind sweep can tell it from a Chrome.
+> Its resolution is limited to what its **own processes** publish: the `--remote-debugging-port=N`
+> on `ego.exe`'s command line (tier 2) and the ports that process listens on (tier 3). Nothing found
+> means ego lite was started without a debug port — restart it with one.
 
 > **Several Chrome instances at once?** A channel name (`attach --cdp chrome`) binds the first
 > attachable candidate in the order above, which may be any running Chrome of that channel — it does
@@ -223,15 +247,24 @@ browser4-cli attach --cdp chrome
 browser4-cli attach --cdp chrome-canary
 browser4-cli attach --cdp msedge
 browser4-cli attach --cdp msedge-dev
+browser4-cli attach --cdp ego-lite
 ```
 
-Supported channels: `chrome`, `chrome-beta`, `chrome-dev`, `chrome-canary`, `msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`.
+Supported channels: `chrome`, `chrome-beta`, `chrome-dev`, `chrome-canary`, `msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`, `ego-lite`.
 
 The target browser must have remote debugging enabled in one of two ways: start it with
 `--remote-debugging-port=<port>` (the debug port is refused on Chrome's default profile, so pass a
 separate `--user-data-dir` as well), or enable the built-in
 `chrome://inspect/#remote-debugging` toggle, whose browser-level WebSocket is attached to directly —
 see the Quick Start note.
+
+> **`ego-lite` is CDP-only.** `ego lite` (Citro Labs) is a Chromium build whose CDP product string
+> is `Chrome/<version>` — indistinguishable from Chrome — and it writes no `DevToolsActivePort`
+> file. The channel therefore resolves the port **only from ego lite's own processes**
+> (`ego.exe --remote-debugging-port=N` and the ports that process listens on), never from the
+> conventional port or the 9222–9333 sweep, so `attach --cdp ego-lite` can never bind a Chrome by
+> accident. It must be started with a debug port first (its normal, logged-in profile works);
+> `--extension ego-lite` is refused, because no extension transport was verified there.
 
 ### 2. Attach by CDP Endpoint URL
 
@@ -379,7 +412,7 @@ browser4-cli screenshot --filename remote-state.png
 
 | Flag | Description |
 |------|-------------|
-| `--cdp <channel\|url\|port>` | Channel name, CDP URL, WebSocket URL, bare port, or `host:port` |
+| `--cdp <channel\|url\|port>` | Channel name, CDP URL, WebSocket URL, bare port, or `host:port`. Channels include `chrome`, `msedge` and `ego-lite` (CDP-only, resolved from ego lite's own processes) |
 | `--endpoint <server-url>` | Browser4 server URL; when used alone, switches CLI to that server. Mutually exclusive with `--extension`; a channel name with a non-loopback `--endpoint` is refused |
 | `--extension [channel]` | Connect via Browser4 Chrome Extension; optionally specify channel (chrome, chrome-beta, chrome-dev, chrome-canary, msedge, msedge-beta, msedge-dev, msedge-canary). Mutually exclusive with `--cdp` and `--endpoint` |
 | `-s <name>` | Name for the attached session (for `-s <name>` targeting later) |
@@ -391,6 +424,8 @@ browser4-cli screenshot --filename remote-state.png
 | Cannot find target browser | Verify remote debugging is enabled; check the browser is running |
 | No matching channel found | Verify channel name spelling; try a CDP URL or port instead |
 | `Unknown browser channel for --extension: …` | The value must be one of the supported channels. A typo would otherwise behave like a default chrome request |
+| `ego lite is supported over CDP only: --extension ego-lite …` | Start ego lite with `--remote-debugging-port=<port>`, then run `attach --cdp ego-lite` — there is no extension transport for it |
+| `Could not find a running ego lite browser with remote debugging enabled` | ego lite writes no `DevToolsActivePort` and reports itself as Chrome over CDP, so it is found only through its own processes. Start it as `ego --remote-debugging-port=9222` (the normal profile works), then `attach --cdp ego-lite`; if it is already running without a debug port, restart it with one — a port cannot be enabled on a running instance |
 | `--cdp`/`--extension`/`--endpoint` "cannot be combined" | One transport per invocation — drop the extra flag |
 | `--cdp <channel>` "resolves a channel name on THIS machine, but --endpoint …" | Pass the CDP URL reachable from the server (`--cdp http://browser-host:9222`), or use the server's loopback URL if it runs on this machine |
 | No CDP endpoint listening | Verify the port is correct and not blocked by a firewall |
@@ -434,4 +469,6 @@ browser4-cli close       # or: browser4-cli disconnect
 > alive over HTTP, and a browser that was already closed obviously cannot survive —
 > in those cases `close` says so instead of claiming the browser is still running.
 
-The `disconnect` alias is available as a more accurate command name for attached sessions, but it's identical to `close` in behavior.
+The `disconnect` alias is available as a more accurate command name for attached sessions, but it's identical to `close` in behavior. Both report the tab they released: the CLI reads the session's tab (`guid` + URL) **before** closing — afterwards the relay is gone and the tab can no longer be named — prints `Detached from / Disconnected from <browser> (extension). Session tab <guid> (<url>) released.`, and exposes `session_tab_guid`, `session_tab_url` and `tab_close_confirmed` in `--json`.
+
+`tab_close_confirmed` is the honest bit: the backend accepting the close is not proof the tab is gone, because removing the session tab detaches the debugger, which cancels the pending `chrome.tabs.remove` request (`closeTab … CancellationException`). The backend treats that specific race as a successful detach (debug-level log) and reports anything else as a close warning, which the CLI prints. So `tab_close_confirmed: false` + a warning means *check the tab*, not *the disconnect failed*.
