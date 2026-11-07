@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser4",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Browser4 skills bundle for DeepSeek Harness — AI-native browser automation (browser4-cli) for autonomous agents, intelligent extraction, and large-scale web automation. Registers the Browser4 skills (browser4-cli, browser4-experience, browser4-plugin, scent-miner) into the DSH skill registry.",
   "keywords": [
     "deepseek-harness",
