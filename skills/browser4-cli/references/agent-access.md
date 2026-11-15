@@ -46,6 +46,64 @@ browser4-cli agent run "Fix the failing test" --coding --access read-build --fol
 An unknown `--access` value is rejected with an error instead of silently falling back — a
 typo must not quietly grant `full`.
 
+### Unrestricted tasks — `agent run --unrestricted`
+
+`--unrestricted` is the escape hatch for a task that genuinely needs everything the **current
+OS user** can do: a one-off repair on a dev box, a migration that must reach services outside the
+workspace, a task that installs tooling.
+
+```bash
+browser4-cli agent run "Upgrade the pinned Maven plugins and run the full build" --coding --unrestricted
+```
+
+It is not another preset — it is applied **on top of** `--access` and replaces the rails with
+pass-through ones for that one task:
+
+| Rail | Normally | With `--unrestricted` |
+|---|---|---|
+| preset gate | `--access` / backend default | `full` — every tool domain |
+| path boundary | workspace + readable roots + `--add-dir` | every path the OS user can reach |
+| protected paths | refused | allowed (the OS still governs) |
+| shell's own rule (command allow-list) | applied | **not** applied — programs the list never knew (`Get-Content`, `wmic`) run as written; shapes it cannot decompose are handed to the platform shell in every mode |
+| OS credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`) | refused | **still refused** — see below |
+| network, destructive commands | per preset | allowed |
+| OS sandbox (`browser4.agent.sandbox`) | applied | **not** applied — plain child processes |
+| runtime-protection vetoes (`taskkill` on the backend, `b4w build/stop`, `bin/build.ps1`, `mklink`/`ln`/`mount`) | refused | **still refused** |
+
+The shell's remaining rule is the command allow-list, and it only looks like a rail: it does not
+confine a process — the same script body already ran unexamined through `powershell -File`, and
+`python -c` is on the list — so refusing `powershell -Command "Get-Content x"` only cost rounds
+(2026-11-14 run). Command shapes the checker cannot decompose (`for` loops, blocks) are handed to
+the platform shell in every mode, not only under this flag. Every row marked **still refused** above
+keeps refusing, and the shell's `hint=` says `no approval lifts this` instead of offering a request
+that cannot be granted.
+
+What it does **not** do:
+
+- It never widens another task: the policy is applied when the task starts and the backend
+  default is restored when it ends.
+- It does not escalate the OS user, and it does not turn "my permissions" into "my secrets":
+  `~/.ssh`, `~/.aws`, `~/.gnupg` and `~/.config/gcloud` stay refused whatever the flag says, so
+  a task cannot read a private key into its context. Nothing runs as root/Administrator that
+  would not from the same shell.
+- It never lets the task destroy the runtime it runs inside: the path/credential string guards are
+  gone, but a `for` loop body still may not `taskkill` the backend, run `b4w build`, or rewrite
+  the workspace topology with `mklink`/`ln`.
+- It is inherited by `agent run --resume <id>` — a continued instruction must not lose the grant
+  it was written against — and recorded on the task row (`unrestricted`) so `agent status` reports
+  it and `coding.permissions` states it (`Unrestricted: YES`, with the sandbox line reading `off`).
+  **A resume cannot drop the grant**: there is no `--no-unrestricted`, so going back to the rails
+  means starting a new task rather than continuing that one.
+- It is audited: the first time the policy is applied the backend writes a `coding.access`
+  approval event with `source=flag`.
+
+`--add-dir` has no effect next to `--unrestricted` (there is no boundary for an added folder to
+join); the flag is harmless, not additive — the whole filesystem is already in scope.
+
+Prefer the narrow tools when the task needs *one* extra capability: `--access read-build` /
+`write`, `--add-dir <path>`, or an operator approval through `coding.requestAccess`.
+`--unrestricted` is all-or-nothing and belongs in scripts, not in an agent's default invocation.
+
 ### Which tool domains the presets gate
 
 The presets bound **workspace power**, so they gate the domains that can write, execute or
@@ -129,6 +187,16 @@ credentials), `PROTECTED_PATH` (governance file or protected directory, such as
 also carries `needed=…` and the raw OS evidence stays in the log). A refusal is structural:
 it must not be retried with different quoting or an interpreter. `coding.permissions` prints
 the same view MCP clients get — the preset, the allowed routes and the protections.
+
+There is **no syntax gate**. A single-line Windows `if` **is** parsed (`if [not] exist <path> <cmd>`,
+`if [/i] [not] <a>==<b> <cmd>`, `if [not] defined <var> <cmd>`, `if [not] errorlevel <n> <cmd>`,
+optionally `(<cmd>)` with one `else (<cmd>)`) and its payload is validated like a top-level command.
+What is not parsed — `for` loops, `else if`, nested blocks, `&`/`|` inside a block, `goto`/`call`
+payloads — is handed to the platform shell **verbatim**, and the shell reports its own parse error.
+The vetoes that do not need the decomposition still refuse (blocked patterns, the command tier,
+credentials and protected paths, and killing or rebuilding this backend), and those are ordinary
+policy refusals. Use a script file run by path (`.\run.cmd`, `./run.sh`) when the shell's parse
+error is in the way.
 
 ### Operator approval: `coding.requestAccess`
 
@@ -290,7 +358,7 @@ answer to "why was this refused" is one call away.
 |---|---|---|
 | `code=TOOL_DENIED` | the preset does not grant the method | use a wider preset, or call `coding.requestAccess` and have an operator approve that effect |
 | `code=EXEC_DISABLED` | shell/code execution is off under the preset | run the step another way, request `fs.exec` approval, or widen to `full` |
-| `code=COMMAND_NOT_ALLOWED` | the command is outside the shell's tier | use the project build (`mvnBuild`), a script file, or a different command |
+| `code=COMMAND_NOT_ALLOWED` | the command is outside the shell's tier | use the project build (`mvnBuild`), an allowed equivalent (`type`/`cat`/`dir`/`grep`) or a `coding.*` file tool, a script file, or a different command — under `--unrestricted` the tier does not apply at all; a `no approval lifts this` hint means the command is a permanent veto (runtime/credential/deny) |
 | `code=PATH_DENIED` | the path is outside the workspace | see [agent-workspace.md](agent-workspace.md) — name the input, use `--coding`, or widen paths |
 | `code=PROTECTED_PATH` / `code=SENSITIVE_PATH` | rails, not capabilities | never approvable; copy the data somewhere allowed |
 | `code=SANDBOX_DENIED` | the OS sandbox refused the operation (the step's `needed` names the granted roots) | keep the command inside the workspace and granted roots; change the sandbox configuration, not the command |
