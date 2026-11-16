@@ -83,6 +83,12 @@ change into the main repository as a patch only when `coding.verify` passes. So
 `--shared-workspace` is refused for `--coding` (a shared directory is not a worktree), and
 `b4w recover` can revert one task's patch without touching anything else.
 
+A worktree that still holds unmerged work is kept: the sweep only reclaims trees whose
+manifest proves the task merged, so a refused/failed/cancelled run is never deleted by
+age (`b4w recover --status` lists them, `b4w recover --prune --force` removes them
+deliberately). `--resume` therefore continues in the interrupted task's own tree, and
+fails with a clear message if that tree is gone — it never silently starts a fresh one.
+
 ### Cost control (`--token-budget`, `--follow` usage lines)
 
 A run is capped at `agent.token.budget.total` (**5M cache-miss tokens** by default) and aborts with `TOKEN_BUDGET` before it can burn unbounded provider credits. The cap counts **cache-miss prompt tokens + output tokens**: prompt-cache reads cost ~10% of the input price and are *not* charged, so a long loop that re-sends a mostly cached prefix no longer aborts a run that actually costs little. Uncached prompt (Anthropic's cache *writes* included) and output stay charged; a provider that reports no cache details charges its whole prompt — an unknown cache is never treated as a hit. Two different knobs:
@@ -122,7 +128,7 @@ The block never spends a slot on `/stats`, `/result` or `/new`: those are in `/h
 
 A task's coding tools run under one access **preset** (`full` / `write` / `read-build` / `read`), and a refused step can be approved out of band through `coding.requestAccess` plus the operator endpoints. The preset table, the `PERMISSION_DENIED | code=...` catalogue, the approval/rail rules, the unattended default and the task-scoped reset are in [agent-access.md](agent-access.md).
 
-**Reads are wider than writes.** Browser4's own data root (`~/.browser4`: logs, task data, per-task workspaces, its `tmp/`), the source checkout, and any folder added with `-Dbrowser4.agent.readPaths=…` are readable from every task — read-only, whatever the preset. `coding.permissions` lists them; see [agent-access.md](agent-access.md#readable-roots--browser4s-own-folders).
+**Reads are wider than writes.** Browser4's own data root (`~/.browser4`: logs, task data, per-task workspaces, its `tmp/`), `~/.browser4` itself even when a managed `--workspace` moved the data root, the CLI workspace owning `<app data>`, the source checkout, and any folder added with `-Dbrowser4.agent.readPaths=…` are readable from every task — read-only, whatever the preset. The one write scope outside the workspace is the checkout a task's workspace **mirrors** (a self-development task edits the code it runs from; the protected rails still apply). `coding.permissions` lists them; see [agent-access.md](agent-access.md#readable-roots--browser4s-own-folders).
 
 **Two layers, one boundary.** The preset and the string checks (`pathGuard`, `workspaceBoundary`, `allowExternalAccess`) decide what the model may *spell* — they are fast-fail and advisory, not enforcement. The boundary is the **execution sandbox**: `coding.shell` and `coding.runCode` run inside it whenever `browser4.agent.sandbox` selects a backend other than `off`. A fresh Windows installation defaults to `windows-acl`; existing installations and Linux/macOS stay `off` until switched. When the
 sandbox is active, an OS denial reaches the model as `PERMISSION_DENIED | code=SANDBOX_DENIED | tool=… | needed=…` (raw evidence stays in the log), and an unavailable sandbox — missing account or credential, failed ACLs, failed write probe, unknown id — **fails the task**; there is no unsandboxed fallback. Switch values, defaults, the ACL matrix, the account property and the `off` rollback are in [config.md](../../../docs/config.md).

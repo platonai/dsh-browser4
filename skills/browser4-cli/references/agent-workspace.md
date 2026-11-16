@@ -58,12 +58,29 @@ requirement is met with a git worktree instead of a copy: every write is disposa
 `git status`/`git diff` work, and a change that does not pass `coding.verify` is never
 merged into the checkout.
 
+**A workspace that is not a git work tree cannot run isolated at all.** The coding task
+fails and says so: install git, or set `-Dbrowser4.agent.workspace.isolation=off`. It
+does not fall back to the mirror, because mirroring links the checkout's modules into the
+scratch workspace — every write would land in your tree with no merge step and no
+`merge`/`isolatedWorkspace` in the result.
+
 **Where a coding task's change lands.** `agent result` reports `workspace` = the
 **main repository** (the checkout the patch was applied to), `isolatedWorkspace` = the
 worktree, and `merge` = `applied` | `refused` | `pending`. `refused` means nothing was
 applied — the run's files exist only in `isolatedWorkspace` — so a client must not read
 `workspace` as containing the work. A refused merge also fails the task, with the reason
-in `problems`/the failure message.
+in `problems`/the failure message. The verdict must still describe the tree: a file
+written **after** `coding.verify` refuses the merge ("re-run verify for the final change
+set"), and a change spanning two ecosystems needs one passing verdict per module.
+
+**Unmerged work is never swept away.** The backend keeps the newest
+`browser4.agent.isolation.keep` worktrees and anything younger than
+`browser4.agent.isolation.maxAgeDays`, and reclaims the rest — but only those whose
+manifest proves the task merged. A tree whose change never reached the checkout (refused,
+failed, cancelled, crashed, still running) is retained, and so is one with no manifest to
+prove otherwise: a refused run has no patch until a merge is attempted, so that tree is
+the only copy of the work. `b4w recover --status` lists what is retained;
+`b4w recover --prune --force` deletes it deliberately.
 
 `agent result <task-id>` names the directory (`workspace`) and lists the files **this
 run** reported (`filesChanged`); a run that aborted without reporting them still lists
@@ -85,7 +102,10 @@ locations is still refused).
 
 Readable but never writable by the model (`code=PROTECTED_PATH`): `VERSION`, `AGENTS.md`,
 `CLAUDE.md`, the root `pom.xml`, `browser4-dependencies/pom.xml`,
-`.github/workflows/ci.yml`, and the `.browser4/`, `.github/workflows/` subtrees.
+`.github/workflows/ci.yml`, and the `.browser4/`, `.github/workflows/` subtrees. The shell applies
+the same split — it refuses the **write** shapes there (a redirection target, a mutating command's
+path argument, `cd` into the subtree) and allows reads, so `type .browser4/…` and `coding.read` both
+reach the previous task's ledger.
 
 Binary files (`.xlsx`, `.pdf`, `.zip`, images) are not read as text by `coding.read`.
 
@@ -172,7 +192,7 @@ preset instead: only `access=full` allows them.
 
 ### Extra folders granted with `--add-dir`
 
-A task's boundary is its own workspace (plus its mirrored module roots and the readable roots). To let a run work on a folder that lives somewhere else, grant it explicitly:
+A task's boundary is its own workspace (plus its mirrored module roots, the checkout those mirrors come from — writable, so a self-development task edits the code it runs from — and the readable roots). To let a run work on a folder that lives somewhere else, grant it explicitly:
 
 ```bash
 browser4-cli agent run "Port the helpers in ../shared-libs into this repo" --coding --add-dir ../shared-libs
@@ -200,8 +220,9 @@ the OS sandbox (`browser4.agent.sandbox`) is **not** applied — child processes
 backend's own token, so a command reaches exactly what you could reach from the same terminal.
 The shell's command allow-list goes too, so programs it never knew — a PowerShell cmdlet included —
 run as written (the list is not a boundary: the same body already ran unexamined through
-`powershell -File`). Command shapes the checker cannot decompose, `for` loops and inline scripts
-included, are handed to the platform shell in every mode.
+`powershell -File`). An inline-script body (`powershell -Command …`, `bash -c …`) is not judged by
+that list in **any** mode, and a shape the checker cannot decompose, `for` loops included, is handed
+to the platform shell in every mode.
 The OS credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`) are the exception:
 they stay refused, because "my permissions" must not become "my secrets" in a model's context.
 The OS is then the only limit: on Windows with `windows-acl` configured, that confinement is what
